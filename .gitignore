@@ -1,0 +1,4 @@
+__pycache__/
+*.pyc
+.gero-node-monitor/
+gero-node-monitor-config.json
