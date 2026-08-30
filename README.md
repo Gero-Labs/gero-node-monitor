@@ -2,11 +2,28 @@
 
 Lightweight monitoring agent for Cardano block producer nodes. Exposes a simple HTTP API that the Gero Wallet SPO dashboard polls for node health, KES status, and leader schedule.
 
-## Quick Install
+## Install
+
+The installer is pinned: it downloads a fixed revision and verifies the SHA-256
+of every file before placing anything on the system.
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/Gero-Labs/gero-node-monitor/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/Gero-Labs/gero-node-monitor/v1.1.0/install.sh -o install.sh
+sha256sum install.sh          # compare against the checksum in the v1.1.0 release notes
+bash install.sh
 ```
+
+Downloading first and checking the hash is the point - piping straight to
+`bash` runs whatever is served before you can look at it.
+
+Installing from `main` is not recommended. The default branch moves, so what
+lands on your block producer depends on when you happened to run the command,
+and the files it pulls are placed with `sudo` and run as a systemd unit.
+
+To install a different revision, set `GERO_MONITOR_REF`. The checksums in the
+installer are what actually protect you, so a revision whose files do not match
+them will be refused - update the pins with `scripts/update-pins.sh <ref>` when
+deliberately moving to a new one.
 
 Or manual:
 ```bash
