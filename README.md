@@ -43,7 +43,8 @@ On first run with `--config`, the agent creates `~/.gero-node-monitor/config.jso
   "network": "mainnet",
   "dbPath": "/opt/cardano/cnode/guild-db/cncli/cncli.db",
   "allowedOrigins": ["*"],
-  "authToken": ""
+  "tunnel": false,
+  "authToken": "<generated at install time>"
 }
 ```
 
@@ -52,7 +53,7 @@ On first run with `--config`, the agent creates `~/.gero-node-monitor/config.jso
 | Field | Description | Default |
 |-------|-------------|---------|
 | `port` | HTTP server port | `12798` |
-| `host` | Bind address (`0.0.0.0` for all, `127.0.0.1` for local only) | `0.0.0.0` |
+| `host` | Bind address (`0.0.0.0` for all, `127.0.0.1` for local only) | `127.0.0.1` |
 | `cardanoNodeSocket` | Path to `node.socket` | Auto-detected from `$CARDANO_NODE_SOCKET_PATH` |
 | `cardanoCliPath` | Path to `cardano-cli` binary | Auto-detected |
 | `cncliPath` | Path to `cncli` binary | Auto-detected |
@@ -63,7 +64,9 @@ On first run with `--config`, the agent creates `~/.gero-node-monitor/config.jso
 | `network` | `mainnet` / `preprod` / `preview` | `mainnet` |
 | `dbPath` | cncli SQLite database path | Auto-detected |
 | `allowedOrigins` | CORS allowed origins | `["*"]` |
-| `authToken` | Optional Bearer token for authentication | `""` (disabled) |
+| `tunnel` | Publish a public `*.trycloudflare.com` URL for remote access | `false` |
+| `allowedOrigins` | Not enforced — CORS is always `*`; `authToken` is the access control | — |
+| `authToken` | Bearer token required on every request. Generated at install time. Mandatory when `tunnel` is `true` | generated |
 
 ## API Endpoints
 
@@ -201,20 +204,40 @@ Simple health check.
 
 ## Security
 
-### Network Access
-- By default binds to `0.0.0.0:12798` — restrict with firewall rules
-- Recommended: use a reverse proxy (nginx/caddy) with HTTPS
-- Or bind to `127.0.0.1` and use SSH tunnel / WireGuard
+This agent serves your block producer's `/leader-schedule` — the slots your pool
+is due to mint. Treat access to it as sensitive: advance knowledge of those slots
+is what someone would need to time an attack against your producer.
+
+### Network access
+Binds to `127.0.0.1` by default, so it is local-only until you opt in to remote
+access.
+
+Setting `"tunnel": true` publishes the agent on a public `*.trycloudflare.com`
+URL and registers that URL with the Gero backend for wallet auto-discovery.
+Note that inbound firewall rules do not constrain this — `cloudflared` makes an
+outbound connection. The tunnel therefore requires `authToken` to be set; the
+agent refuses to start otherwise.
+
+For remote access without the tunnel, keep `"tunnel": false` and use a reverse
+proxy with HTTPS, an SSH tunnel, or WireGuard.
 
 ### Authentication
-Set `authToken` in config to require `Authorization: Bearer <token>` header:
-```json
-{
-  "authToken": "your-secret-token-here"
-}
-```
+`authToken` is generated at install time and required on every request as
+`Authorization: Bearer <token>`. The comparison is constant-time.
 
-The Gero Wallet will prompt for this token during Node Monitor setup.
+Leaving it empty disables the check — acceptable only for a local-only instance
+(`"tunnel": false` and `host` on loopback), never for anything reachable off the
+machine.
+
+> **Upgrading from an earlier version?** Older releases shipped `"authToken": ""`
+> with `tunnel` defaulting to **on**, and skipped the auth check entirely when the
+> token was empty — so those instances published every endpoint publicly with no
+> authentication. If you ran one, assume the URL was reachable, set an `authToken`,
+> and restart. The old tunnel URL stops working once the agent restarts.
+
+> **Wallet support:** sending the token requires Gero Wallet with
+> [gerowallet#1014](https://github.com/Gero-Labs/gerowallet/pull/1014). Older
+> builds cannot authenticate, so a token-protected agent is unreachable from them.
 
 ### CORS
 By default allows all origins (`*`). Restrict to your extension ID:

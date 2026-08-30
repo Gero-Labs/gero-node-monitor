@@ -4,8 +4,10 @@ Gero Node Monitor — HTTP Server
 Lightweight monitoring agent for Cardano block producer nodes.
 """
 
+import hmac
 import json
 import os
+import secrets
 import subprocess
 import time
 import sys
@@ -907,17 +909,32 @@ class Handler(BaseHTTPRequestHandler):
             return json.loads(self.rfile.read(length).decode())
         return {}
 
+    def _authorized(self):
+        """
+        Bearer-token check, shared by GET and POST.
+
+        Constant-time compare: the token is a shared secret and the monitor is
+        reachable over a public tunnel, so a plain `!=` leaks it a byte at a
+        time to anyone willing to measure.
+
+        Returns True when the request may proceed. Sends the 401 itself when
+        not, so callers only need to return.
+        """
+        token = CFG.get("authToken", "")
+        if not token:
+            return True
+        auth = self.headers.get("Authorization", "")
+        if not hmac.compare_digest(auth, f"Bearer {token}"):
+            self.send_json({"error": "Unauthorized"}, 401)
+            return False
+        return True
+
     def do_POST(self):
         parsed = urlparse(self.path)
         path = parsed.path
 
-        # Auth check
-        token = CFG.get("authToken", "")
-        if token:
-            auth = self.headers.get("Authorization", "")
-            if auth != f"Bearer {token}":
-                self.send_json({"error": "Unauthorized"}, 401)
-                return
+        if not self._authorized():
+            return
 
         try:
             if path == "/kes-rotate":
@@ -936,13 +953,8 @@ class Handler(BaseHTTPRequestHandler):
         path = parsed.path
         params = parse_qs(parsed.query)
 
-        # Auth check
-        token = CFG.get("authToken", "")
-        if token:
-            auth = self.headers.get("Authorization", "")
-            if auth != f"Bearer {token}":
-                self.send_json({"error": "Unauthorized"}, 401)
-                return
+        if not self._authorized():
+            return
 
         try:
             if path == "/health":
@@ -1068,9 +1080,18 @@ def main():
     print(f"\033[0;36m[gero-monitor]\033[0m Pool ID: {CFG['poolId']}")
     print(f"\033[0;36m[gero-monitor]\033[0m Node socket: {CFG['cardanoNodeSocket']}")
 
-    # Start Cloudflare tunnel automatically
+    # Opt-in, and it was not always so. `tunnel` defaulted to True while
+    # `authToken` defaulted to "" and the auth check was skipped whenever the
+    # token was empty — so a first run published every endpoint, including
+    # /leader-schedule, on a public HTTPS URL with no authentication at all.
+    # Inbound firewall rules never helped: cloudflared dials out.
     tunnel_url = None
-    if CFG.get("tunnel", True):
+    if CFG.get("tunnel", False):
+        if not CFG.get("authToken", ""):
+            print(f"\033[1;33m[gero-monitor]\033[0m Refusing to open a public tunnel with no authToken set.")
+            print(f"\033[1;33m[gero-monitor]\033[0m Add one to {CONFIG_FILE} — any long random string:")
+            print(f"\033[1;33m[gero-monitor]\033[0m   \"authToken\": \"{secrets.token_urlsafe(32)}\"")
+            sys.exit(1)
         print(f"\033[0;36m[gero-monitor]\033[0m Starting Cloudflare tunnel...")
         tunnel_url = start_cloudflare_tunnel(port)
         if tunnel_url:
@@ -1090,7 +1111,8 @@ def main():
         else:
             print(f"\033[1;33m[gero-monitor]\033[0m Tunnel not available — local access only on {host}:{port}")
     else:
-        print(f"\033[0;36m[gero-monitor]\033[0m Tunnel disabled (set tunnel: true in config to enable)")
+        print(f"\033[0;36m[gero-monitor]\033[0m Tunnel off — local access only on {host}:{port}")
+        print(f"\033[0;36m[gero-monitor]\033[0m For remote access set \"tunnel\": true and \"authToken\" in {CONFIG_FILE}")
 
     print(f"\033[0;36m[gero-monitor]\033[0m Listening on {host}:{port}")
 
@@ -1152,7 +1174,10 @@ def create_config():
         "topologyPath": f"{cnode_home}/files/topology.json",
         "prometheusPort": 12798,
         "allowedOrigins": ["*"],
-        "authToken": "",
+        # Generated per-install. The monitor serves the pool's leader schedule,
+        # so an unauthenticated instance on a public tunnel hands out the exact
+        # slots this block producer is due to mint.
+        "authToken": secrets.token_urlsafe(32),
     }
 
     with open(CONFIG_FILE, "w") as f:
@@ -1162,6 +1187,7 @@ def create_config():
     print(f"\033[0;36m[gero-monitor]\033[0m Pool ID: {pool_id or 'NOT FOUND — edit config manually'}")
     print(f"\033[0;36m[gero-monitor]\033[0m VRF skey: {vrf_skey or 'NOT FOUND — edit config manually'}")
     print(f"\033[0;36m[gero-monitor]\033[0m Node socket: {node_socket}")
+    print(f"\033[0;36m[gero-monitor]\033[0m Auth token: {config['authToken']}")
     print(f"\033[0;36m[gero-monitor]\033[0m Edit config if needed, then run: python3 {sys.argv[0]}")
 
 
