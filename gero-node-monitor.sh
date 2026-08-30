@@ -28,6 +28,24 @@ warn() { echo -e "${YELLOW}[gero-monitor]${NC} $*"; }
 err() { echo -e "${RED}[gero-monitor]${NC} $*" >&2; }
 ok() { echo -e "${GREEN}[gero-monitor]${NC} $*"; }
 
+sha256_hex() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum | awk '{print $1}'
+  else
+    shasum -a 256 | awk '{print $1}'
+  fi
+}
+
+# CSPRNG only. $RANDOM is seeded from the pid and clock and is trivially
+# guessable, which for an auth token is the same as having none.
+generate_token() {
+  if command -v openssl >/dev/null 2>&1; then
+    openssl rand -base64 32 | tr -d '\n=' | tr '+/' '-_'
+  else
+    LC_ALL=C tr -dc 'A-Za-z0-9_-' < /dev/urandom | dd bs=1 count=43 2>/dev/null
+  fi
+}
+
 # ─── Auto-detect paths ──────────────────────────────────────────────────────
 detect_paths() {
   # cardano-cli
@@ -63,10 +81,16 @@ create_config() {
   local pool_id=""
   [[ -f "$POOL_ID_FILE" ]] && pool_id=$(cat "$POOL_ID_FILE" | tr -d '[:space:]')
 
+  # Generated per install. This agent serves /leader-schedule — the slots this
+  # producer is due to mint — so an unauthenticated instance hands an attacker
+  # the timing they would need to target it.
+  local new_token
+  new_token="$(generate_token)"
+
   cat > "$CONFIG_FILE" <<EOF
 {
   "port": 12798,
-  "host": "0.0.0.0",
+  "host": "127.0.0.1",
   "cardanoNodeSocket": "${NODE_SOCKET}",
   "cardanoCliPath": "${CARDANO_CLI}",
   "cncliPath": "${CNCLI}",
@@ -77,11 +101,15 @@ create_config() {
   "network": "mainnet",
   "dbPath": "${CNCLI_DB}",
   "allowedOrigins": ["*"],
-  "authToken": ""
+  "authToken": "${new_token}"
 }
 EOF
 
+  chmod 600 "$CONFIG_FILE"
+
   ok "Config created at $CONFIG_FILE"
+  log "Auth token: ${new_token}"
+  log "Enter it in Gero Wallet alongside the monitor URL."
   log "Edit the config to verify paths, then run: $0 --start"
 }
 
@@ -92,7 +120,7 @@ load_config() {
   fi
 
   PORT=$(jq -r '.port // 12798' "$CONFIG_FILE")
-  HOST=$(jq -r '.host // "0.0.0.0"' "$CONFIG_FILE")
+  HOST=$(jq -r '.host // "127.0.0.1"' "$CONFIG_FILE")
   NODE_SOCKET=$(jq -r '.cardanoNodeSocket' "$CONFIG_FILE")
   CARDANO_CLI=$(jq -r '.cardanoCliPath' "$CONFIG_FILE")
   CNCLI=$(jq -r '.cncliPath' "$CONFIG_FILE")
@@ -244,19 +272,27 @@ cors_headers() {
   echo "Access-Control-Allow-Headers: Authorization, Content-Type"
 }
 
+# Compares SHA-256 digests rather than the raw strings. A plain [[ != ]] on the
+# secret returns as soon as the first byte differs, which leaks the token a byte
+# at a time to anyone able to measure; digests of unequal inputs differ from the
+# start, so the comparison tells an attacker nothing about the token itself.
 check_auth() {
   local auth_header="$1"
-  if [[ -n "$AUTH_TOKEN" ]]; then
-    if [[ "$auth_header" != "Bearer ${AUTH_TOKEN}" ]]; then
-      return 1
-    fi
-  fi
-  return 0
+  [[ -z "$AUTH_TOKEN" ]] && return 0
+  local want got
+  want="$(printf '%s' "Bearer ${AUTH_TOKEN}" | sha256_hex)"
+  got="$(printf '%s' "$auth_header" | sha256_hex)"
+  [[ "$want" == "$got" ]]
 }
 
 handle_request() {
   local method path auth_header query_string
-  read -r method path _ < /dev/stdin
+  # NOT `< /dev/stdin`. socat hands this process the socket as fd 0, and on
+  # Linux /dev/stdin is a symlink to /proc/self/fd/0 which cannot be reopened
+  # for a socket - the open fails with ENXIO and every request dies before the
+  # request line is read. Reading stdin directly is what was meant. BSD/macOS
+  # reopen succeeds, which is why this survived.
+  read -r method path _
 
   # Read headers
   auth_header=""
@@ -391,11 +427,27 @@ handle_request() {
 start_server() {
   load_config
 
+  # The tunnel gate's equivalent here. This agent has no tunnel, so the way it
+  # reaches the network is the bind address: 0.0.0.0 with an empty authToken
+  # served /leader-schedule to anyone who could route to the box.
+  case "$HOST" in
+    127.0.0.1|localhost|::1|"[::1]") ;;
+    *)
+      if [[ -z "$AUTH_TOKEN" ]]; then
+        err "Refusing to bind ${HOST} with no authToken set."
+        err "Set one in ${CONFIG_FILE} — any long random string:"
+        err "  \"authToken\": \"$(generate_token)\""
+        err "Or set \"host\": \"127.0.0.1\" to listen locally only."
+        exit 1
+      fi
+      ;;
+  esac
+
   log "Starting Gero Node Monitor v${VERSION}"
   log "Listening on ${HOST}:${PORT}"
   log "Pool ID: ${POOL_ID}"
   log "Node socket: ${NODE_SOCKET}"
-  [[ -n "$AUTH_TOKEN" ]] && log "Authentication: enabled" || warn "Authentication: disabled"
+  [[ -n "$AUTH_TOKEN" ]] && log "Authentication: enabled" || warn "Authentication: disabled (loopback only)"
 
   # Check prerequisites
   [[ ! -S "$NODE_SOCKET" ]] && warn "Node socket not found: ${NODE_SOCKET}"
