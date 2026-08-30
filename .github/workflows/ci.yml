@@ -31,12 +31,20 @@ jobs:
 
       - name: Check shell scripts
         run: |
-          sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+          sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck socat jq
           bash -n install.sh
           bash -n gero-node-monitor.sh
           bash -n scripts/smoke-test.sh
+          bash -n scripts/smoke-test-shell.sh
           # Advisory for now: the existing scripts predate this check.
-          shellcheck -S error install.sh gero-node-monitor.sh scripts/smoke-test.sh || true
+          shellcheck -S error install.sh gero-node-monitor.sh scripts/smoke-test.sh scripts/smoke-test-shell.sh || true
 
-      - name: Smoke test
+      - name: Smoke test (python agent)
         run: ./scripts/smoke-test.sh
+
+      # The shell agent is what install.sh places and what the systemd unit
+      # runs, so it is the implementation operators actually expose.
+      - name: Smoke test (shell agent)
+        env:
+          SHELL_SMOKE_REQUIRE: '1'
+        run: ./scripts/smoke-test-shell.sh
