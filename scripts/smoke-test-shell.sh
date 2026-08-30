@@ -82,10 +82,30 @@ write_config 127.0.0.1 "$TOKEN"
 bash "$AGENT" --start > "$TMP/server.log" 2>&1 &
 SERVER_PID=$!
 
+# socat writes its own errors to the agent's monitor.log, not to stdout, so a
+# server that dies on startup otherwise looks identical to one that is merely
+# slow — the loop just spins out and every request comes back 000.
+ready=0
 for _ in $(seq 1 60); do
-  curl -s -o /dev/null --max-time 2 "http://127.0.0.1:$PORT/health" 2>/dev/null && break
+  if curl -s -o /dev/null --max-time 2 "http://127.0.0.1:$PORT/health" 2>/dev/null; then
+    ready=1; break
+  fi
+  if ! kill -0 "$SERVER_PID" 2>/dev/null; then
+    echo "FAIL: agent exited during startup"
+    echo "startup log:";  sed 's/^/  /' "$TMP/server.log" 2>/dev/null
+    echo "monitor.log:";  sed 's/^/  /' "$HOME/.gero-node-monitor/monitor.log" 2>/dev/null
+    exit 1
+  fi
   sleep 0.25
 done
+if [ "$ready" -ne 1 ]; then
+  echo "FAIL: agent never accepted a connection on port $PORT"
+  echo "startup log:";  sed 's/^/  /' "$TMP/server.log" 2>/dev/null
+  echo "monitor.log:";  sed 's/^/  /' "$HOME/.gero-node-monitor/monitor.log" 2>/dev/null
+  echo "socat version:"; socat -V 2>&1 | head -2 | sed 's/^/  /'
+  echo "listeners:";     (ss -ltnp 2>/dev/null || netstat -an 2>/dev/null | grep LISTEN) | head -10 | sed 's/^/  /'
+  exit 1
+fi
 
 echo "Auth enforcement:"
 check "no token is rejected"      401 "$(code "http://127.0.0.1:$PORT/health")"
@@ -128,8 +148,9 @@ fi
 
 if [ "$fail" -ne 0 ]; then
   echo
-  echo "server log:"; sed 's/^/  /' "$TMP/server.log" 2>/dev/null | head -20
-  echo "bind log:";   sed 's/^/  /' "$TMP/bind.log"   2>/dev/null | head -20
+  echo "server log:";  sed 's/^/  /' "$TMP/server.log" 2>/dev/null | head -20
+  echo "monitor.log:"; sed 's/^/  /' "$HOME/.gero-node-monitor/monitor.log" 2>/dev/null | head -20
+  echo "bind log:";    sed 's/^/  /' "$TMP/bind.log"   2>/dev/null | head -20
   exit 1
 fi
 

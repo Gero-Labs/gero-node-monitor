@@ -287,7 +287,12 @@ check_auth() {
 
 handle_request() {
   local method path auth_header query_string
-  read -r method path _ < /dev/stdin
+  # NOT `< /dev/stdin`. socat hands this process the socket as fd 0, and on
+  # Linux /dev/stdin is a symlink to /proc/self/fd/0 which cannot be reopened
+  # for a socket - the open fails with ENXIO and every request dies before the
+  # request line is read. Reading stdin directly is what was meant. BSD/macOS
+  # reopen succeeds, which is why this survived.
+  read -r method path _
 
   # Read headers
   auth_header=""
