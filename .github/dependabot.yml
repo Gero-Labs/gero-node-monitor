@@ -1,0 +1,27 @@
+# Dependabot configuration for the Gero Node Monitor
+# https://docs.github.com/github/administering-a-repository/configuration-options-for-dependency-updates
+
+version: 2
+updates:
+  # GitHub Actions only - this agent has no dependency manifest of its own
+  # (stdlib Python plus shell), so the pinned action SHAs in .github/workflows
+  # are the only thing here that goes stale. Without this they stay frozen at
+  # whatever they were pinned to, including through security fixes.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "03:00"
+    # main requires a review, so every ungrouped PR costs an approval. One
+    # grouped PR a week is far likelier to actually get looked at than four.
+    groups:
+      actions:
+        patterns:
+          - "*"
+    labels:
+      - "github-actions"
+      - "automated"
+    commit-message:
+      prefix: "ci"
+      include: "scope"
