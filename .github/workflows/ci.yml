@@ -35,8 +35,15 @@ jobs:
           bash -n install.sh
           bash -n gero-node-monitor.sh
           bash -n scripts/smoke-test.sh
+          bash -n scripts/update-pins.sh
           # Advisory for now: the existing scripts predate this check.
           shellcheck -S error install.sh gero-node-monitor.sh scripts/smoke-test.sh || true
 
       - name: Smoke test
         run: ./scripts/smoke-test.sh
+
+      # The installer pins a revision and the SHA-256 of each file it fetches.
+      # If those drift the failure is silent and lands on operators, so verify
+      # the pinned bytes still hash to what install.sh claims.
+      - name: Verify installer pins
+        run: ./scripts/verify-pins.sh
